@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 
 type DashboardLayoutProps = {
@@ -9,6 +10,9 @@ type DashboardLayoutProps = {
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [text, setText] = useState("");
+
+  const router = useRouter();
+
   return (
     <div className="flex flex-row flex-1 border-4 border-blue-500 dark:border-zinc-700 rounded-xl m-4 overflow-hidden">
       <aside className="w-1/5 bg-blue-50 dark:bg-zinc-900 p-6 border-r border-blue-100 dark:border-zinc-800 flex flex-col">
@@ -31,6 +35,28 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           >
             Settings
           </Link>
+          <button
+            onClick={() => router.push("/")}
+            className="flex items-center gap-2 text-sm text-zinc-400 dark:text-zinc-400 hover:text-red-500 dark:hover:text-red-400 transition-colors group mt-2"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="transition-transform group-hover:translate-x-0.5"
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Logout
+          </button>
         </nav>
         <div className="mt-auto pt-6 border-t border-blue-200">
           <label className="block text-[10px] font-bold text-blue-400 uppercase mb-2">

@@ -1,6 +1,10 @@
-import React from "react";
+import { notFound } from "next/navigation";
 
 export default function DashboardSettingsPage() {
+  // const data = null;
+
+  // if (!data) notFound();
+
   return (
     <div className="p-4 bg-amber-50 border-2 border-amber-500 ">
       <h1 className="text-xl font-bold text-bold text-amber-700">

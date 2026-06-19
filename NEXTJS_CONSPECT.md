@@ -361,49 +361,320 @@ layout.tsx       ← ошибки здесь НЕ перехватываются
 
 ---
 
-### 1.10 Динамические сегменты
+### 1.10 Not Found (страница 404)
 
-Имя папки в квадратных скобках создаёт динамический параметр:
+`not-found.tsx` — специальный файл который показывается когда роут не существует или когда вручную вызвана функция `notFound()`.
 
-| Паттерн папки | URL | `params` |
+**Два способа попасть на not-found страницу:**
+
+**1. Автоматически** — когда пользователь переходит по URL которого не существует в файловой системе (`/blabla`, `/dashboard/xyz` и т.д.). Next.js сам рендерит ближайший `not-found.tsx`.
+
+**2. Программно через `notFound()`** — вызывается внутри Server Component когда данные не найдены. Например, загрузили пользователя по ID, а он `null`:
+
+```tsx
+// app/dashboard/settings/page.tsx
+import { notFound } from "next/navigation";
+
+export default function DashboardSettingsPage() {
+  const data = null; // представим что fetch вернул null
+
+  if (!data) notFound(); // ← бросает специальное исключение, Next.js его перехватывает
+                         //   и показывает ближайший not-found.tsx
+
+  return <div>Settings</div>;
+}
+```
+
+> `notFound()` работает как `throw` — код после него не выполняется. Под капотом он бросает специальный объект ошибки, который Next.js отлавливает и направляет в `not-found.tsx`.
+
+**Где размещать `not-found.tsx`:**
+
+| Расположение | Когда срабатывает |
+|---|---|
+| `app/not-found.tsx` | Глобальный 404 для всего приложения — наш файл |
+| `app/dashboard/not-found.tsx` | Только для `/dashboard/*` роутов |
+| `app/blog/[slug]/not-found.tsx` | Только когда конкретный slug не найден |
+
+Next.js ищет ближайший `not-found.tsx` **вверх по дереву** от места вызова `notFound()`. Если не нашёл — показывает дефолтный Next.js 404.
+
+**Отличие от `error.tsx`:**
+
+| | `not-found.tsx` | `error.tsx` |
 |---|---|---|
-| `[slug]` | `/blog/hello` | `{ slug: 'hello' }` |
-| `[...slug]` | `/shop/a/b/c` | `{ slug: ['a','b','c'] }` |
-| `[[...slug]]` | `/docs` или `/docs/a/b` | `{}` или `{ slug: ['a','b'] }` |
+| Причина | URL не существует / данные не найдены | Исключение в `page.tsx` |
+| Триггер | Авто (неверный URL) или `notFound()` | `throw new Error(...)` |
+| `'use client'` | Не нужен | **Обязателен** |
+| Пропсы | Нет | `error`, `reset` |
+
+---
+
+### 1.11 Динамические роуты
+
+---
+
+#### 1.11.1 Одиночный динамический сегмент `[slug]`
+
+Папка в квадратных скобках создаёт параметр — одно значение из URL:
+
+```
+app/blog/[slug]/page.tsx
+
+/blog/hello-world  →  params.slug = "hello-world"
+/blog/next-js-15   →  params.slug = "next-js-15"
+/blog              →  404 (сегмент обязателен)
+```
 
 ```tsx
 // app/blog/[slug]/page.tsx
-export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
-  const { slug } = await params
+type Props = { params: Promise<{ slug: string }> }
+
+export default async function BlogPost({ params }: Props) {
+  const { slug } = await params  // params — всегда Promise в Next.js 15+
   return <h1>{slug}</h1>
+}
+```
+
+> `params` — это `Promise`, его нужно `await`. Это изменение Next.js 15 — раньше params был синхронным объектом.
+
+---
+
+#### 1.11.2 Обязательный catch-all `[...slug]`
+
+Три точки внутри скобок — `params.slug` становится массивом `string[]`. Матчит **один и более** сегментов, базовый URL без сегментов даёт 404.
+
+В проекте: `app/shop/[...slug]/page.tsx`
+
+```
+/shop                          →  404 (нет сегментов — не матчит)
+/shop/clothing                 →  slug = ["clothing"]
+/shop/clothing/adidas          →  slug = ["clothing", "adidas"]
+/shop/clothing/adidas/tracksuit →  slug = ["clothing", "adidas", "tracksuit"]
+```
+
+```tsx
+// app/shop/[...slug]/page.tsx
+type ShopPageProps = {
+  params: Promise<{ slug: string[] }>
+}
+
+export default async function ShopPage({ params }: ShopPageProps) {
+  const { slug } = await params  // slug: string[] — всегда массив, никогда undefined
+
+  // Деструктуризация массива — удобный способ достать сегменты по позиции
+  const [category, brand, model] = slug
+  // /shop/clothing/adidas/tracksuit → category="clothing", brand="adidas", model="tracksuit"
+  // /shop/clothing                  → category="clothing", brand=undefined, model=undefined
+
+  return (
+    <nav>
+      <span>Shop</span>
+      {slug.map((item, index) => (      // безопасно — slug всегда массив
+        <span key={index}>/ {item}</span>
+      ))}
+    </nav>
+  )
 }
 ```
 
 ---
 
-### 1.11 Route Groups — организация без влияния на URL
+#### 1.11.3 Опциональный catch-all `[[...slug]]`
 
-Папка в круглых скобках `(name)` **не попадает в URL**, только организует файлы:
+Двойные квадратные скобки — матчит **ноль и более** сегментов. Базовый URL тоже работает, но `slug` приходит как `undefined`.
+
+В проекте: `app/store/[[...slug]]/page.tsx`
+
+```
+/store                          →  slug = undefined
+/store/clothing                 →  slug = ["clothing"]
+/store/clothing/adidas          →  slug = ["clothing", "adidas"]
+/store/clothing/adidas/tracksuit →  slug = ["clothing", "adidas", "tracksuit"]
+```
+
+```tsx
+// app/store/[[...slug]]/page.tsx
+type StorePageProps = {
+  params: Promise<{ slug: string[] }>  // типизация та же, но реально может прийти undefined
+}
+
+export default async function StorePage({ params }: StorePageProps) {
+  const { slug } = await params
+
+  // ВАЖНО: при /store — slug равен undefined, нельзя сразу деструктурировать
+  const currentSlug = slug ?? []   // ?? — nullish coalescing, заменяет только null/undefined
+  //                         ↑ не использовать || "", т.к. строка не имеет .map()
+
+  const [category, brand, model] = currentSlug
+
+  return (
+    <div>
+      {!category && <p>Добро пожаловать — выберите категорию</p>}
+      {category && <p>Категория: {category}</p>}
+
+      {currentSlug.map((item, index) => (    // currentSlug — всегда массив, безопасно
+        <span key={index}>/ {item}</span>
+      ))}
+    </div>
+  )
+}
+```
+
+**`??` vs `||` — важное отличие:**
+```ts
+slug ?? []   // заменяет только null и undefined → правильно
+slug || []   // заменяет null, undefined, "", 0, false → может сломать непустые строки
+```
+
+---
+
+#### 1.11.4 Сравнительная таблица всех вариантов
+
+| Паттерн | Пример папки | `/store` | `/store/a` | `/store/a/b` | `slug` тип |
+|---|---|---|---|---|---|
+| `[slug]` | `[id]` | 404 | ✓ `"a"` | 404 | `string` |
+| `[...slug]` | `[...slug]` | 404 | ✓ `["a"]` | ✓ `["a","b"]` | `string[]` |
+| `[[...slug]]` | `[[...slug]]` | ✓ `undefined` | ✓ `["a"]` | ✓ `["a","b"]` | `string[] \| undefined` |
+
+---
+
+#### 1.11.5 URL-кодирование в сегментах
+
+Next.js автоматически декодирует URL-encoded символы в `params`:
+
+```
+/shop/clothing/%20adidas/tracksuit
+                ↑
+         %20 = пробел (space)
+
+params.slug = ["clothing", " adidas", "tracksuit"]
+//                          ↑ пробел сохраняется
+```
+
+Поэтому при выводе стоит делать `.trim()`:
+```tsx
+{slug.map(item => <span>{item.trim()}</span>)}
+```
+
+---
+
+#### 1.11.6 Текущая структура проекта
+
+```
+app/
+├── shop/
+│   └── [...slug]/          ← обязательный catch-all
+│       └── page.tsx        →  /shop/x, /shop/x/y, НО не /shop
+└── store/
+    └── [[...slug]]/        ← опциональный catch-all
+        └── page.tsx        →  /store, /store/x, /store/x/y
+```
+
+---
+
+### 1.12 Route Groups
+
+Папка в круглых скобках `(name)` **не попадает в URL** — используется только для организации файлов и применения общего layout к подмножеству роутов.
+
+```
+app/(auth)/login/page.tsx   →   /login       (не /(auth)/login)
+app/(auth)/register/page.tsx →  /register
+```
+
+---
+
+#### 1.12.1 Главный сценарий — разный layout для разных секций
+
+В проекте группа `(auth)` объединяет `/login` и `/register` под одним layout — центрированная карточка на тёмном фоне. Dashboard при этом имеет совершенно другой layout (сайдбар + main).
+
+```
+src/app/
+├── layout.tsx              ← Root Layout, оборачивает всё
+├── (auth)/
+│   ├── layout.tsx          ← Auth Layout: центрированная карточка с градиентом
+│   ├── login/
+│   │   └── page.tsx        →  /login
+│   └── register/
+│       └── page.tsx        →  /register
+└── dashboard/
+    ├── layout.tsx          ← Dashboard Layout: сайдбар + main
+    └── page.tsx            →  /dashboard
+```
+
+**Цепочка рендеринга для `/login`:**
+```
+app/layout.tsx          ← Root (всегда)
+  └── (auth)/layout.tsx ← Auth layout (только для /login и /register)
+        └── (auth)/login/page.tsx
+```
+
+**Цепочка рендеринга для `/dashboard`:**
+```
+app/layout.tsx              ← Root (всегда)
+  └── dashboard/layout.tsx  ← Dashboard layout (только для /dashboard/*)
+        └── dashboard/page.tsx
+```
+
+Auth layout из проекта — полноэкранный центрированный вид, применяется только к страницам внутри `(auth)`:
+
+```tsx
+// app/(auth)/layout.tsx
+export default function AuthLayout({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-zinc-950 ...">
+      <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl ...">
+        <header className="text-center mb-10">
+          <h2>Welcome back</h2>
+          <p>Enter your details to continue</p>
+        </header>
+
+        {children}  {/* сюда придёт login/page.tsx или register/page.tsx */}
+
+        <footer>Secure Authentication System</footer>
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+#### 1.12.2 Другие сценарии применения
+
+**Несколько Root Layouts** — убрать `app/layout.tsx`, добавить свой `layout.tsx` в каждую группу. Каждая группа получает свой `<html>` и `<body>`:
 
 ```
 app/
 ├── (marketing)/
-│   ├── layout.tsx        ← layout только для маркетинга
-│   └── page.tsx          →  /
-├── (shop)/
-│   ├── layout.tsx        ← layout только для шопа
-│   └── cart/
-│       └── page.tsx      →  /cart
+│   ├── layout.tsx   ← свой <html><body> для маркетинга
+│   └── page.tsx     →  /
+└── (app)/
+    ├── layout.tsx   ← свой <html><body> для приложения
+    └── dashboard/
+        └── page.tsx →  /dashboard
 ```
 
-Применения:
-- Разные layouts для разных секций при одном уровне вложенности
-- Несколько Root Layouts (убрать `app/layout.tsx`, добавить `layout.tsx` в каждую группу)
-- Применить `loading.tsx` только к конкретному роуту
+**Применить `loading.tsx` только к одному роуту** без влияния на соседние:
+
+```
+app/dashboard/
+├── (overview)/
+│   ├── loading.tsx   ← только для /dashboard, не для /dashboard/settings
+│   └── page.tsx      →  /dashboard
+└── settings/
+    └── page.tsx      →  /dashboard/settings (loading.tsx не применяется)
+```
 
 ---
 
-### 1.12 Приватные папки
+#### 1.12.3 Важные правила
+
+- Скобки `(name)` убирают папку из URL, но **не из файловой системы** — layout.tsx внутри группы реально существует и применяется
+- Роуты из разных групп **не должны давать одинаковый URL** — `(a)/about/page.tsx` и `(b)/about/page.tsx` оба дают `/about` → конфликт, ошибка сборки
+- `(auth)` — это только имя для организации, любое слово в скобках работает: `(marketing)`, `(admin)`, `(public)`
+
+---
+
+### 1.13 Приватные папки
 
 Префикс `_` исключает папку из роутинга полностью:
 
@@ -417,40 +688,218 @@ app/
 
 ---
 
-### 1.13 Навигация — компонент `<Link>`
+### 1.14 Компонент `<Link>`
 
-`<Link>` расширяет `<a>`, добавляет клиентскую навигацию и **prefetching** (страница предзагружается при появлении ссылки во viewport):
+`<Link>` расширяет HTML `<a>`, добавляя клиентскую навигацию и prefetching. Это основной способ перемещения между страницами в Next.js.
 
 ```tsx
 import Link from 'next/link'
 
-export default function Nav() {
+// Все атрибуты <a> работают: className, target, rel и т.д.
+<Link href="/dashboard" className="nav-link" target="_blank">
+  Dashboard
+</Link>
+```
+
+---
+
+#### Пропсы
+
+**`href`** — обязательный, `string | object`
+
+Путь или URL для перехода. Может быть строкой или объектом с `pathname` и `query`:
+
+```tsx
+// Строка
+<Link href="/dashboard">Dashboard</Link>
+
+// Динамический сегмент
+<Link href={`/photo/${car.id}`}>{car.name}</Link>  // из нашего page.tsx
+
+// Объект — удобно для query string
+<Link href={{ pathname: '/shop', query: { category: 'clothing', brand: 'nike' } }}>
+  Nike Clothing
+</Link>
+// результат: /shop?category=clothing&brand=nike
+
+// Якорная ссылка — скроллит к элементу с id="settings"
+<Link href="/dashboard#settings">Settings</Link>
+```
+
+---
+
+**`replace`** — `boolean`, дефолт `false`
+
+По умолчанию `<Link>` добавляет новый URL в стек истории браузера (`history.push`). С `replace={true}` — заменяет текущую запись (`history.replace`). Кнопка "Назад" не вернёт на предыдущую страницу.
+
+```tsx
+// Полезно для редиректов после логина — чтобы кнопка "Назад"
+// не возвращала на форму входа
+<Link href="/dashboard" replace>
+  Войти в систему
+</Link>
+```
+
+---
+
+**`scroll`** — `boolean`, дефолт `true`
+
+Управляет прокруткой при навигации. По умолчанию Next.js сохраняет позицию скролла если страница видима во вьюпорте, иначе скроллит к верху страницы. При `scroll={false}` — позиция скролла не меняется никогда.
+
+```tsx
+// Полезно в таблицах с пагинацией — не прыгать наверх при смене страницы
+<Link href="/users?page=2" scroll={false}>
+  Следующая страница
+</Link>
+
+// Или через useRouter:
+router.push('/dashboard', { scroll: false })
+```
+
+---
+
+**`prefetch`** — `"auto" | true | false | null`, дефолт `"auto"`
+
+Контролирует предзагрузку страницы. **Работает только в production** (`next build`).
+
+| Значение | Поведение |
+|---|---|
+| `"auto"` или `null` (дефолт) | Статические роуты — загружает полностью. Динамические — загружает до ближайшего `loading.tsx` |
+| `true` | Загружает полностью для всех роутов, включая динамические |
+| `false` | Отключает prefetch полностью — ни при попадании во viewport, ни при hover |
+
+```tsx
+// Отключить для тяжёлых страниц которые редко посещают
+<Link href="/analytics" prefetch={false}>
+  Analytics
+</Link>
+
+// Принудительно загрузить динамический роут полностью
+<Link href="/dashboard/[id]" prefetch={true}>
+  Dashboard
+</Link>
+```
+
+---
+
+**`onNavigate`** — `(e: NavigateEvent) => void`
+
+Вызывается **только при клиентской навигации** (SPA-переход). Принимает объект события с методом `e.preventDefault()` для отмены перехода.
+
+```tsx
+'use client'
+// Важно: onNavigate требует клиентского компонента
+
+<Link
+  href="/dashboard"
+  onNavigate={(e) => {
+    if (hasUnsavedChanges) {
+      e.preventDefault()  // отменяет переход
+      alert('Сохраните изменения перед выходом')
+    }
+  }}
+>
+  Dashboard
+</Link>
+```
+
+**`onNavigate` vs `onClick` — ключевые отличия:**
+
+| | `onClick` | `onNavigate` |
+|---|---|---|
+| Срабатывает при любом клике | Да | Нет |
+| Ctrl/Cmd + Click (новая вкладка) | Да | **Нет** |
+| Внешние URL | Да | **Нет** |
+| `download` атрибут | Да | **Нет** |
+| Отмена навигации | Нет | **Да** (`e.preventDefault()`) |
+
+---
+
+**`transitionTypes`** — `string[]`
+
+Передаёт типы анимации для [View Transitions API](https://developer.mozilla.org/en-US/docs/Web/API/View_Transitions_API). Значения попадают в `React.addTransitionType` и позволяют `<ViewTransition>` компонентам применять разные анимации в зависимости от типа перехода.
+
+```tsx
+<Link href="/about" transitionTypes={['slide-in']}>
+  About
+</Link>
+```
+
+---
+
+#### Активная ссылка — `usePathname()`
+
+Для подсветки текущего роута нужен `usePathname()`. Компонент должен быть `'use client'`:
+
+```tsx
+'use client'
+import { usePathname } from 'next/navigation'
+import Link from 'next/link'
+
+export function NavLinks() {
+  const pathname = usePathname()
+
+  const links = [
+    { href: '/dashboard', label: 'Dashboard' },
+    { href: '/dashboard/settings', label: 'Settings' },
+  ]
+
   return (
-    <nav>
-      <Link href="/">Главная</Link>
-      <Link href="/dashboard">Dashboard</Link>
+    <nav className="flex flex-col gap-2">
+      {links.map(({ href, label }) => (
+        <Link
+          key={href}
+          href={href}
+          className={pathname === href
+            ? 'text-blue-500 font-bold'    // активная
+            : 'text-zinc-400 hover:text-white'  // неактивная
+          }
+        >
+          {label}
+        </Link>
+      ))}
     </nav>
   )
 }
 ```
 
-В нашем проекте `<Link>` используется в `dashboard/layout.tsx` внутри сайдбара — это правильный паттерн: навигация живёт в layout, а не в page, поэтому не перемонтируется при переходах между `/dashboard/*` страницами.
+---
 
-Для программной навигации в Client Components — хук `useRouter`:
+#### `useRouter` — программная навигация
+
+Для навигации из обработчиков событий (не из JSX) используется хук `useRouter`. Только в Client Components:
 
 ```tsx
 'use client'
 import { useRouter } from 'next/navigation'
 
-export function Button() {
+export function CloseButton() {
   const router = useRouter()
-  return <button onClick={() => router.push('/dashboard')}>Go</button>
+
+  return (
+    <>
+      <button onClick={() => router.push('/dashboard')}>Перейти</button>
+      <button onClick={() => router.replace('/login')}>Заменить</button>
+      <button onClick={() => router.back()}>Назад</button>   {/* из нашего CloseButton */}
+      <button onClick={() => router.forward()}>Вперёд</button>
+      <button onClick={() => router.refresh()}>Обновить данные</button>
+    </>
+  )
 }
 ```
 
+| Метод | Что делает |
+|---|---|
+| `router.push(url)` | Переход с добавлением в историю |
+| `router.replace(url)` | Переход без добавления в историю |
+| `router.back()` | Назад (как кнопка браузера) |
+| `router.forward()` | Вперёд |
+| `router.refresh()` | Обновляет текущую страницу, не перезагружая браузер |
+| `router.prefetch(url)` | Вручную предзагружает роут |
+
 ---
 
-### 1.14 Metadata (метаданные)
+### 1.15 Metadata (метаданные)
 
 Экспортируется из `layout.tsx` или `page.tsx`:
 
@@ -466,7 +915,7 @@ export const metadata: Metadata = {
 
 ---
 
-### 1.15 Dark Mode с Tailwind
+### 1.16 Dark Mode с Tailwind
 
 Next.js + Tailwind поддерживают dark mode через префикс `dark:` — стили применяются когда на `<html>` есть класс `dark` (или через медиа-запрос, зависит от настройки `tailwind.config`).
 
@@ -487,29 +936,183 @@ Next.js + Tailwind поддерживают dark mode через префикс 
 
 ---
 
-### 1.16 Текущая структура проекта
+### 1.17 Параллельные роуты (`@slot`)
+
+Параллельные роуты позволяют рендерить **несколько страниц одновременно** в одном layout. Папка с префиксом `@` создаёт именованный слот — он передаётся в layout как проп.
+
+```
+app/
+├── layout.tsx          ← получает { children, modal } как пропсы
+├── page.tsx            →  /  (попадает в children)
+└── @modal/             ← именованный слот "modal"
+    └── (.)photo/
+        └── [id]/
+            └── page.tsx  →  рендерится в слот modal
+```
+
+**Root Layout получает слот как проп:**
+
+```tsx
+// app/layout.tsx — из нашего проекта
+type RootLayoutProps = {
+  children: ReactNode;
+  modal: ReactNode;    // ← слот @modal автоматически передаётся сюда
+};
+
+export default function RootLayout({ children, modal }: RootLayoutProps) {
+  return (
+    <html>
+      <body>
+        {children}  {/* обычная страница — home, dashboard и т.д. */}
+        {modal}     {/* слот @modal — рендерится поверх */}
+      </body>
+    </html>
+  );
+}
+```
+
+**`default.tsx` — обязательный fallback:**
+
+Когда слот не матчит никакой роут (например, мы просто на `/`), Next.js ищет `default.tsx` внутри слота. Без него — ошибка 404 на несвязанных роутах.
+
+```tsx
+// app/@modal/default.tsx
+export default function Default() {
+  return null;  // ← слот невидим когда модалка не открыта
+}
+```
+
+**Ключевые особенности параллельных роутов:**
+- Каждый слот может иметь свои `loading.tsx`, `error.tsx`
+- Слоты рендерятся **одновременно**, независимо друг от друга
+- Имя папки `@modal` не попадает в URL
+- Можно создавать несколько слотов: `@sidebar`, `@modal`, `@analytics` — все придут в layout
+
+---
+
+### 1.18 Перехватывающие роуты (`(.)`)
+
+Перехватывающие роуты позволяют **показать другой роут** внутри текущего layout без полной навигации. Классический паттерн — модальное окно: URL меняется, но пользователь остаётся на той же странице.
+
+**Синтаксис перехвата:**
+
+| Паттерн | Перехватывает | Пример |
+|---|---|---|
+| `(.)photo` | роут того же уровня | `app/@modal/(.)photo/[id]` перехватывает `app/photo/[id]` |
+| `(..)photo` | роут на уровень выше | |
+| `(..)(..)photo` | роут на два уровня выше | |
+| `(...)photo` | роут от корня `app/` | |
+
+**В нашем проекте — паттерн "modal фото":**
+
+```
+app/
+├── page.tsx                        →  /  (список машин с кнопками-ссылками)
+├── photo/
+│   └── [id]/
+│       └── page.tsx                →  /photo/1  (полная страница)
+└── @modal/
+    ├── default.tsx                 ← null, слот пуст на обычных страницах
+    └── (.)photo/
+        └── [id]/
+            └── page.tsx            →  перехватывает /photo/1 → рендерит модалку
+```
+
+**Поведение в зависимости от способа перехода:**
+
+| Способ перехода | Что показывается |
+|---|---|
+| Клик по `<Link href="/photo/1">` с главной | Модалка поверх списка машин (`@modal` слот) |
+| Прямой ввод URL `/photo/1` в браузере | Полная страница (`photo/[id]/page.tsx`) |
+| Обновление страницы (F5) на `/photo/1` | Полная страница |
+
+**Это работает потому что:**
+- `<Link>` — клиентская навигация, Next.js перехватывает роут и рендерит `@modal`
+- Прямой URL / F5 — серверный рендеринг, перехват не срабатывает, загружается обычная страница
+
+**Закрытие модалки через `router.back()`:**
+
+```tsx
+// app/_components/CloseButton.tsx
+"use client";  // ← обязательно, useRouter — клиентский хук
+import { useRouter } from "next/navigation";
+
+export function CloseButton() {
+  const router = useRouter();
+
+  return (
+    <button onClick={() => router.back()}>
+      ✕ Close
+    </button>
+  );
+}
+```
+
+`router.back()` — возвращается на предыдущий URL (`/`), Next.js снова рендерит слот через `default.tsx` который возвращает `null` → модалка исчезает.
+
+**Полная цепочка рендеринга при клике на машину:**
+
+```
+Клик <Link href="/photo/1">
+  │
+  ├── children слот:    app/page.tsx  ←  остаётся, список машин виден на фоне
+  │                                      (bg-black/50 оверлей делает его полупрозрачным)
+  │
+  └── @modal слот:      app/@modal/(.)photo/[id]/page.tsx
+                          ├── fixed inset-0 z-50  ← поверх всего
+                          ├── bg-black/50          ← фон просвечивает на 50%
+                          ├── {car.name}           ← контент модалки
+                          └── <CloseButton />      ← router.back() → /
+```
+
+**Папка `_components` — приватные компоненты:**
+
+```
+app/
+└── _components/        ← префикс _ исключает из роутинга
+    └── CloseButton.tsx ← переиспользуемый компонент, не является страницей
+```
+
+---
+
+### 1.19 Текущая структура проекта
 
 ```
 src/app/
-├── layout.tsx          — Root Layout: html+body, Geist-шрифты, flex flex-col
-├── page.tsx            — Стартовая страница "/"
-├── globals.css         — Глобальные стили
-└── dashboard/
-    ├── layout.tsx      — Nested Layout: сайдбар + main, инпут сохраняет состояние
-    ├── template.tsx    — Template: анимация входа, инпут сбрасывается при навигации
-    ├── loading.tsx     — Скелетон: показывается пока page.tsx ждёт async-данные
-    ├── error.tsx       — Error boundary: перехватывает ошибки page.tsx, обязательно 'use client'
-    └── page.tsx        — Страница "/dashboard", async с задержкой 2s
-```
-
-**Цепочка рендеринга для `/dashboard`:**
-```
-app/layout.tsx                    ← Root: не перемонтируется никогда
-  └── dashboard/layout.tsx            ← сайдбар остаётся при загрузке и ошибках
-        └── dashboard/template.tsx        ← перемонтируется при каждом переходе
-              └── dashboard/error.tsx         ← ловит ошибки из page.tsx
-                    └── dashboard/loading.tsx      ← fallback пока page грузится
-                          └── dashboard/page.tsx       ← рендерится после 2s
+├── layout.tsx              — Root Layout: получает { children, modal } слоты
+├── page.tsx                — "/" список машин CARS с Link на /photo/[id]
+├── not-found.tsx           — Глобальная 404 с иллюстрацией астронавта
+├── globals.css
+├── _components/
+│   └── CloseButton.tsx     — 'use client', router.back() закрывает модалку
+├── @modal/                 — Параллельный слот "modal"
+│   ├── default.tsx         — null, слот пуст когда модалка не открыта
+│   └── (.)photo/
+│       └── [id]/
+│           └── page.tsx    — Перехватывает /photo/[id] → рендерит модалку
+├── photo/
+│   └── [id]/
+│       └── page.tsx        — Полная страница /photo/[id] (при прямом переходе)
+├── dashboard/
+│   ├── layout.tsx          — Nested Layout: сайдбар + main
+│   ├── template.tsx        — Template: анимация входа
+│   ├── loading.tsx         — Скелетон загрузки
+│   ├── error.tsx           — Error boundary ('use client')
+│   ├── page.tsx            — "/dashboard", async с задержкой 2s
+│   └── settings/
+│       └── page.tsx        — "/dashboard/settings"
+├── (auth)/
+│   ├── layout.tsx          — Auth Layout: центрированная карточка
+│   ├── login/
+│   │   └── page.tsx        — "/login"
+│   └── register/
+│       └── page.tsx        — "/register"
+├── shop/
+│   └── [...slug]/
+│       └── page.tsx        — "/shop/x/y/z" (обязательный catch-all)
+└── store/
+    └── [[...slug]]/
+        └── page.tsx        — "/store" и "/store/x/y/z" (опциональный catch-all)
 ```
 
 ---
