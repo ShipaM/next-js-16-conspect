@@ -829,73 +829,236 @@ router.push('/dashboard', { scroll: false })
 
 #### Активная ссылка — `usePathname()`
 
-Для подсветки текущего роута нужен `usePathname()`. Компонент должен быть `'use client'`:
+`usePathname()` возвращает текущий путь URL в виде строки. Только в `'use client'` компонентах, импортируется из `next/navigation`.
 
 ```tsx
 'use client'
 import { usePathname } from 'next/navigation'
-import Link from 'next/link'
 
-export function NavLinks() {
+export function Sidebar() {
   const pathname = usePathname()
-
-  const links = [
-    { href: '/dashboard', label: 'Dashboard' },
-    { href: '/dashboard/settings', label: 'Settings' },
-  ]
-
-  return (
-    <nav className="flex flex-col gap-2">
-      {links.map(({ href, label }) => (
-        <Link
-          key={href}
-          href={href}
-          className={pathname === href
-            ? 'text-blue-500 font-bold'    // активная
-            : 'text-zinc-400 hover:text-white'  // неактивная
-          }
-        >
-          {label}
-        </Link>
-      ))}
-    </nav>
-  )
+  console.log(pathname) // '/dashboard', '/dashboard/settings', ...
 }
 ```
+
+**Что возвращает:**
+
+| URL в браузере | `usePathname()` |
+|---|---|
+| `/dashboard` | `"/dashboard"` |
+| `/dashboard/settings` | `"/dashboard/settings"` |
+| `/shop/clothing/nike` | `"/shop/clothing/nike"` |
+
+Не включает query string (`?q=test`) и хэш (`#section`) — только путь.
+
+---
+
+**Применение — подсветка активного пункта меню**
+
+В нашем `Sidebar.tsx` используется для определения активного пункта навигации:
+
+```tsx
+const pathname = usePathname()
+
+const menuItems = [
+  { href: '/dashboard', label: 'Dashboard', icon: ... },
+  { href: '/dashboard/settings', label: 'Settings', icon: ... },
+  { href: '/dashboard/analytics', label: 'Analytics', icon: ... },
+]
+
+{menuItems.map((item) => (
+  <Link
+    key={item.href}
+    href={item.href}
+    className={`flex items-center gap-2 text-sm transition-colors group ${
+      pathname === item.href
+        ? 'text-blue-500 dark:text-sky-400'
+        : 'text-zinc-400 hover:text-blue-500 dark:hover:text-sky-400'
+    }`}
+  >
+    {item.label}
+  </Link>
+))}
+```
+
+---
+
+**Частая ошибка — конфликт классов Tailwind**
+
+Tailwind применяет класс не по порядку в строке, а по порядку определения в сгенерированном CSS-файле. Поэтому нельзя просто добавить активный класс поверх базового:
+
+```tsx
+// ❌ Не работает — text-zinc-400 всегда присутствует и перебивает text-blue-500
+className={`text-zinc-400 ${pathname === href ? 'text-blue-500' : ''}`}
+
+// ✅ Правильно — классы взаимно исключающие
+className={pathname === href ? 'text-blue-500' : 'text-zinc-400 hover:text-blue-500'}
+```
+
+Правило: **базовый цвет и активный цвет не должны присутствовать в строке одновременно** — нужно делать их условными через тернарный оператор.
 
 ---
 
 #### `useRouter` — программная навигация
 
-Для навигации из обработчиков событий (не из JSX) используется хук `useRouter`. Только в Client Components:
+Для навигации из обработчиков событий используется хук `useRouter`. Только в `'use client'` компонентах. Импортируется из `next/navigation` (не из `next/router`).
 
 ```tsx
 'use client'
 import { useRouter } from 'next/navigation'
 
-export function CloseButton() {
+export default function DashboardLayout() {
   const router = useRouter()
-
-  return (
-    <>
-      <button onClick={() => router.push('/dashboard')}>Перейти</button>
-      <button onClick={() => router.replace('/login')}>Заменить</button>
-      <button onClick={() => router.back()}>Назад</button>   {/* из нашего CloseButton */}
-      <button onClick={() => router.forward()}>Вперёд</button>
-      <button onClick={() => router.refresh()}>Обновить данные</button>
-    </>
-  )
+  // ...
 }
 ```
 
-| Метод | Что делает |
-|---|---|
-| `router.push(url)` | Переход с добавлением в историю |
-| `router.replace(url)` | Переход без добавления в историю |
-| `router.back()` | Назад (как кнопка браузера) |
-| `router.forward()` | Вперёд |
-| `router.refresh()` | Обновляет текущую страницу, не перезагружая браузер |
-| `router.prefetch(url)` | Вручную предзагружает роут |
+В нашем проекте `useRouter` используется в `dashboard/layout.tsx` — кнопка Logout вызывает `router.push('/')`.
+
+---
+
+**`router.push(href, options?)`**
+
+Клиентская навигация с добавлением новой записи в стек истории браузера. Кнопка "Назад" вернёт на предыдущую страницу.
+
+```tsx
+router.push('/dashboard')
+
+// С опциями:
+router.push('/dashboard', {
+  scroll: false,           // не скроллить наверх после перехода (по умолчанию true)
+  transitionTypes: ['slide-in'],  // типы анимации для View Transitions API
+})
+```
+
+---
+
+**`router.replace(href, options?)`**
+
+То же что `push`, но **заменяет** текущую запись в истории вместо добавления новой. Кнопка "Назад" не вернёт на страницу откуда произошёл replace.
+
+```tsx
+// После успешного логина — чтобы кнопка "Назад" не возвращала на форму входа
+router.replace('/dashboard')
+
+router.replace('/dashboard', {
+  scroll: false,
+  transitionTypes: ['fade'],
+})
+```
+
+| | `push` | `replace` |
+|---|---|---|
+| Добавляет в историю | Да | Нет |
+| "Назад" работает | Да | Нет |
+| Типичный сценарий | Обычная навигация | После логина / редирект |
+
+---
+
+**`router.refresh()`**
+
+Обновляет текущий роут: делает новый запрос к серверу, перерендеривает Server Components и сбрасывает Client Cache для текущего роута. **Не перезагружает браузер** — клиентское состояние (`useState`, позиция скролла) сохраняется.
+
+```tsx
+// Например после мутации данных (добавили запись в БД)
+await saveComment(data)
+router.refresh()  // подтянет новые данные с сервера без потери состояния формы
+```
+
+> `refresh()` сбрасывает только **клиентский кэш**. Для инвалидации серверного кэша используются `revalidatePath()` / `revalidateTag()`.
+
+---
+
+**`router.prefetch(href, options?)`**
+
+Вручную предзагружает роут для более быстрого перехода. `<Link>` делает это автоматически при появлении во вьюпорте, `router.prefetch` позволяет управлять этим вручную.
+
+```tsx
+// Предзагрузить при hover на кастомный элемент
+<div onMouseEnter={() => router.prefetch('/dashboard')}>
+  Dashboard
+</div>
+
+// С callback который срабатывает когда данные устарели
+router.prefetch('/dashboard', {
+  onInvalidate: () => {
+    // данные протухли — можно перезапустить prefetch
+    router.prefetch('/dashboard')
+  },
+})
+```
+
+---
+
+**`router.back()`**
+
+Возврат на предыдущую страницу в стеке истории. Аналог кнопки "Назад" браузера.
+
+```tsx
+// Из нашего CloseButton — закрывает модалку и возвращает на /
+<button onClick={() => router.back()}>✕ Close</button>
+```
+
+---
+
+**`router.forward()`**
+
+Переход вперёд в стеке истории. Аналог кнопки "Вперёд" браузера.
+
+```tsx
+router.forward()
+```
+
+---
+
+**Все методы в одной таблице:**
+
+| Метод | Опции | Описание |
+|---|---|---|
+| `router.push(url)` | `scroll`, `transitionTypes` | Переход + новая запись в историю |
+| `router.replace(url)` | `scroll`, `transitionTypes` | Переход + замена текущей записи |
+| `router.refresh()` | — | Обновить данные Server Components без перезагрузки |
+| `router.prefetch(url)` | `onInvalidate` | Предзагрузить роут вручную |
+| `router.back()` | — | Назад в истории |
+| `router.forward()` | — | Вперёд в истории |
+
+---
+
+**Отслеживание событий навигации**
+
+В App Router нет `router.events`. Вместо этого используется комбинация `usePathname` + `useSearchParams` в `useEffect`:
+
+```tsx
+'use client'
+import { useEffect } from 'react'
+import { usePathname, useSearchParams } from 'next/navigation'
+
+export function NavigationTracker() {
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+
+  useEffect(() => {
+    // Срабатывает при каждой навигации
+    console.log('Navigated to:', pathname, searchParams.toString())
+  }, [pathname, searchParams])
+
+  return null
+}
+```
+
+> Компонент с `useSearchParams` нужно оборачивать в `<Suspense>` в layout — иначе ошибка при prerendering.
+
+---
+
+**Важно: импорт только из `next/navigation`**
+
+```tsx
+// ✅ App Router
+import { useRouter } from 'next/navigation'
+
+// ❌ Pages Router — не использовать в App Router
+import { useRouter } from 'next/router'
+```
 
 ---
 
@@ -1084,7 +1247,8 @@ src/app/
 ├── not-found.tsx           — Глобальная 404 с иллюстрацией астронавта
 ├── globals.css
 ├── _components/
-│   └── CloseButton.tsx     — 'use client', router.back() закрывает модалку
+│   ├── CloseButton.tsx     — 'use client', router.back() закрывает модалку
+│   └── ProjectsLibrary.tsx — 'use client', поиск/фильтры/сортировка через URL
 ├── @modal/                 — Параллельный слот "modal"
 │   ├── default.tsx         — null, слот пуст когда модалка не открыта
 │   └── (.)photo/
@@ -1110,10 +1274,189 @@ src/app/
 ├── shop/
 │   └── [...slug]/
 │       └── page.tsx        — "/shop/x/y/z" (обязательный catch-all)
-└── store/
-    └── [[...slug]]/
-        └── page.tsx        — "/store" и "/store/x/y/z" (опциональный catch-all)
+├── store/
+│   └── [[...slug]]/
+│       └── page.tsx        — "/store" и "/store/x/y/z" (опциональный catch-all)
+└── projects/
+    └── page.tsx            — "/projects" Server Component, оборачивает ProjectsLibrary в Suspense
 ```
+
+---
+
+### 1.20 URL State Management — состояние в адресной строке
+
+Паттерн при котором состояние фильтров, поиска и сортировки хранится в URL (`?query=react&category=nextjs&sort=popular`) вместо `useState`. URL становится **источником истины** — ссылку можно шарить, кнопка "Назад" работает, F5 сохраняет состояние.
+
+---
+
+#### 1.20.1 Почему `useSearchParams` требует `<Suspense>`
+
+`useSearchParams()` читает query-строку URL в Client Component. Next.js **не может статически пренедерить** компонент который зависит от URL — значение неизвестно до момента запроса. Поэтому Next.js выдаёт ошибку если компонент с `useSearchParams` не обёрнут в `<Suspense>`.
+
+**Решение — разделить страницу на два компонента:**
+
+```tsx
+// app/projects/page.tsx — Server Component (без 'use client')
+import { Suspense } from "react";
+import { ProjectsLibrary } from "../_components/ProjectsLibrary";
+
+export default function ProjectsPage() {
+  return (
+    // Suspense — граница: пока ProjectsLibrary не готова, показывает fallback
+    <Suspense fallback={<div>Loading...</div>}>
+      <ProjectsLibrary />
+    </Suspense>
+  );
+}
+```
+
+```tsx
+// app/_components/ProjectsLibrary.tsx — Client Component
+"use client";
+import { useSearchParams } from "next/navigation";
+// ...
+```
+
+**Почему именно так:** `page.tsx` остаётся Server Component и предоставляет `<Suspense>` boundary. `ProjectsLibrary` — Client Component внутри Suspense, может безопасно читать `useSearchParams()`.
+
+> **Правило:** любой Client Component использующий `useSearchParams` должен быть обёрнут в `<Suspense>` в ближайшем Server Component-родителе.
+
+---
+
+#### 1.20.2 Чтение и запись URL-параметров
+
+```tsx
+"use client";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useTransition } from "react";
+
+const router = useRouter();
+const pathname = usePathname();       // "/projects"
+const searchParams = useSearchParams(); // read-only URLSearchParams
+
+const [isPending, startTransition] = useTransition();
+
+// Читаем — с дефолтами если параметр не задан
+const category = searchParams.get("category") || "all";
+const sort = searchParams.get("sort") || "newest";
+
+// Пишем — универсальная функция для обновления любого параметра
+const updateParams = (key: string, value: string | null) => {
+  // searchParams иммутабелен — клонируем через toString()
+  const params = new URLSearchParams(searchParams.toString());
+
+  if (value && value !== "all") {
+    params.set(key, value);
+  } else {
+    params.delete(key); // убираем параметр из URL когда значение дефолтное
+  }
+
+  // startTransition помечает навигацию как низкоприоритетную:
+  // isPending=true пока роутер применяет URL, но UI не блокируется
+  startTransition(() => {
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  });
+};
+```
+
+`router.replace` вместо `push` — каждое изменение фильтра не добавляет новую запись в историю браузера.
+
+---
+
+#### 1.20.3 Дебаунс для текстового поиска
+
+Текстовый ввод не должен писать в URL при каждом нажатии клавиши — это порождало бы лишние записи в history и перерендеры роутера. Решение — `useState` + `useEffect` с таймером:
+
+```tsx
+const [searchQuery, setSearchQuery] = useState(
+  searchParams.get("query") || "", // инициализация из URL
+);
+
+useEffect(() => {
+  const timer = setTimeout(() => {
+    const params = new URLSearchParams(searchParams.toString());
+
+    if (searchQuery) {
+      params.set("query", searchQuery);
+    } else {
+      params.delete("query");
+    }
+
+    startTransition(() => {
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    });
+  }, 300); // 300 мс после последнего нажатия
+
+  return () => clearTimeout(timer); // отменяем если пользователь ещё печатает
+}, [searchQuery, pathname, router]);
+// searchParams намеренно НЕ в deps — иначе бесконечный цикл:
+// searchParams меняется → effect → меняет searchParams → effect → ...
+```
+
+**Разделение ответственности:**
+- `searchQuery` (useState) — то что видит пользователь в поле ввода, обновляется мгновенно
+- `?query=` в URL — обновляется с задержкой 300 мс через `useEffect`
+- `filteredProjects` (useMemo) — читает из URL, а не из `searchQuery`
+
+---
+
+#### 1.20.4 Фильтрация и сортировка через `useMemo`
+
+```tsx
+const filteredProjects = useMemo(() => {
+  const urlQuery = searchParams.get("query") || "";
+
+  return PROJECTS
+    .filter((p) => {
+      const matchesQuery =
+        p.title.toLowerCase().includes(urlQuery.toLowerCase()) ||
+        p.desc.toLowerCase().includes(urlQuery.toLowerCase());
+      const matchesCategory = category === "all" || p.category === category;
+      return matchesQuery && matchesCategory;
+    })
+    .sort((a, b) => {
+      if (sort === "popular") return b.stars - a.stars;
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+}, [searchParams, category, sort]);
+// Пересчитывается только когда реально меняется URL — не при каждом ре-рендере
+```
+
+---
+
+#### 1.20.5 Схема потока данных
+
+```
+Пользователь печатает
+  → setSearchQuery (мгновенно, useState)
+  → useEffect + debounce 300ms
+  → router.replace (обновляет URL)
+  → searchParams меняется (Next.js реактивен к URL)
+  → useMemo пересчитывает filteredProjects
+  → UI обновляется
+
+Пользователь кликает фильтр/сортировку
+  → updateParams (без debounce)
+  → router.replace
+  → searchParams меняется
+  → useMemo пересчитывает filteredProjects
+  → UI обновляется
+```
+
+---
+
+#### 1.20.6 `useTransition` — индикатор навигации
+
+```tsx
+const [isPending, startTransition] = useTransition();
+
+// isPending === true пока роутер применяет новый URL
+{isPending && (
+  <div className="animate-pulse text-blue-500">Синхронизация...</div>
+)}
+```
+
+`startTransition` помечает обновление как низкоприоритетное — React не блокирует поле ввода пока роутер обрабатывает URL. Без него быстрая печать могла бы "замораживать" интерфейс.
 
 ---
 
