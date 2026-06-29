@@ -1247,8 +1247,13 @@ src/app/
 ├── not-found.tsx           — Глобальная 404 с иллюстрацией астронавта
 ├── globals.css
 ├── _components/
-│   ├── CloseButton.tsx     — 'use client', router.back() закрывает модалку
-│   └── ProjectsLibrary.tsx — 'use client', поиск/фильтры/сортировка через URL
+│   ├── CloseButton.tsx         — 'use client', router.back() закрывает модалку
+│   ├── ProjectsLibrary.tsx     — 'use client', поиск/фильтры/сортировка через URL
+│   ├── wink-button.tsx         — 'use client', Client Component внутри Server Component
+│   ├── sneakers-catalog.tsx    — Server Component, fetch с next: { tags: ['sneakers-data'] }
+│   ├── hot-release.tsx         — Server Component, fetch с групп. + индив. тегами кэша
+│   └── layout/
+│       └── Sidebar.tsx         — 'use client', навигация с usePathname + useRouter
 ├── @modal/                 — Параллельный слот "modal"
 │   ├── default.tsx         — null, слот пуст когда модалка не открыта
 │   └── (.)photo/
@@ -1263,8 +1268,12 @@ src/app/
 │   ├── loading.tsx         — Скелетон загрузки
 │   ├── error.tsx           — Error boundary ('use client')
 │   ├── page.tsx            — "/dashboard", async с задержкой 2s
-│   └── settings/
-│       └── page.tsx        — "/dashboard/settings"
+│   ├── settings/
+│   │   └── page.tsx        — "/dashboard/settings"
+│   └── users/
+│       ├── page.tsx        — "/dashboard/users", Server Component, fetch через db
+│       └── [id]/
+│           └── page.tsx    — "/dashboard/users/[id]", динамический роут
 ├── (auth)/
 │   ├── layout.tsx          — Auth Layout: центрированная карточка
 │   ├── login/
@@ -1277,8 +1286,19 @@ src/app/
 ├── store/
 │   └── [[...slug]]/
 │       └── page.tsx        — "/store" и "/store/x/y/z" (опциональный catch-all)
-└── projects/
-    └── page.tsx            — "/projects" Server Component, оборачивает ProjectsLibrary в Suspense
+├── projects/
+│   └── page.tsx            — "/projects" Server Component, оборачивает ProjectsLibrary в Suspense
+├── sneakers/
+│   └── page.tsx            — "/sneakers", рендерит HotRelease + SneakerCatalog
+├── products/
+│   ├── page.tsx            — "/products", "use cache" + cacheLife({ stale/revalidate/expire }) + cacheTag
+│   └── [id]/
+│       └── page.tsx        — "/products/[id]", "use cache" + cacheLife("hours") + notFound()
+└── cache/
+    └── page.tsx            — демонстрация fetch с разными стратегиями кэширования
+
+lib/
+└── db.ts                   — 'server-only', мок-база данных (имитирует fetch с задержкой)
 ```
 
 ---
@@ -1460,4 +1480,611 @@ const [isPending, startTransition] = useTransition();
 
 ---
 
-*Следующие темы для изучения: Server vs Client Components, Data Fetching, Caching*
+---
+
+## 2. Server Components vs Client Components
+
+В Next.js App Router **все компоненты по умолчанию — Server Components**. Client Components включаются директивой `'use client'` в начале файла.
+
+---
+
+### 2.1 Server Components
+
+Рендерятся на сервере — HTML генерируется до отправки клиенту. Могут делать `async/await` напрямую, читать БД, файловую систему, использовать секретные переменные окружения.
+
+```tsx
+// app/dashboard/users/page.tsx — Server Component (нет 'use client')
+import { db } from "../../../../lib/db";
+
+export default async function UsersPage() {
+  const users = await db.query.users.findMany(); // ← прямой вызов БД, без API
+
+  return (
+    <ul>
+      {users.map((user) => (
+        <li key={user.id}>{user.email}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+**Что можно в Server Component:**
+- `async/await` на верхнем уровне компонента
+- Прямые запросы к БД, файловой системе, внутренним API
+- Доступ к секретным env-переменным (`process.env.DB_SECRET`)
+- Импорт пакетов помеченных `'server-only'`
+
+**Чего нельзя:**
+- `useState`, `useEffect`, `useContext` и другие React-хуки
+- Браузерные API (`window`, `document`, `localStorage`)
+- Обработчики событий (`onClick`, `onChange`)
+
+---
+
+### 2.2 Client Components (`'use client'`)
+
+`'use client'` — директива файла, **не компонента**. Всё что экспортируется из этого файла становится Client Component. Директива пишется в самой первой строке перед импортами.
+
+```tsx
+// app/_components/wink-button.tsx
+"use client";  // ← директива файла
+
+export function WinkButton({ name }: { name: string }) {
+  return (
+    <button onClick={() => alert(`Вы подмигнули ${name}!`)}>
+      Подмигнуть
+    </button>
+  );
+}
+```
+
+**Что можно в Client Component:**
+- `useState`, `useEffect`, `useRef`, `useContext`
+- Браузерные API и обработчики событий
+- Хуки Next.js: `useRouter`, `usePathname`, `useSearchParams`
+
+**Чего нельзя:**
+- `async/await` на верхнем уровне (нет прямого await компонента)
+- Импорт `'server-only'` модулей
+
+---
+
+### 2.3 `'server-only'` — защита серверного кода
+
+Пакет `server-only` гарантирует что модуль **нельзя случайно импортировать в Client Component**. При попытке импорта в клиентском коде — ошибка сборки.
+
+```ts
+// lib/db.ts
+import 'server-only'  // ← Next.js бросит ошибку если попытаться импортировать из 'use client'
+
+export const db = {
+  query: {
+    users: {
+      findMany: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500)) // имитация сетевого запроса
+        return [
+          { id: 1, name: 'Артем', email: 'artem@gmail.com' },
+          // ...
+        ]
+      },
+    },
+  },
+}
+```
+
+**Зачем нужен:** без `'server-only'` модуль с секретными ключами или логикой БД мог бы случайно попасть в клиентский бандл — это дыра в безопасности. `'server-only'` делает такой импорт ошибкой на этапе сборки, а не в рантайме.
+
+Аналог для клиентского кода — `'client-only'` (гарантирует что браузерный модуль не запустится на сервере).
+
+---
+
+### 2.4 Смешивание: Client Component внутри Server Component
+
+Server Component может рендерить Client Component как дочерний — это основной паттерн в Next.js.
+
+```tsx
+// app/dashboard/users/page.tsx — Server Component
+import { WinkButton } from "@/app/_components/wink-button"; // ← импорт Client Component
+import { db } from "../../../../lib/db";
+
+export default async function UsersPage() {
+  const users = await db.query.users.findMany(); // ← только в Server Component
+
+  return (
+    <ul>
+      {users.map((user) => (
+        <li key={user.id}>
+          <span>{user.email}</span>
+          <WinkButton name={user.name} />  {/* ← Client Component со своим onClick */}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+**Как это работает:** Server Component рендерит HTML со всеми данными. Туда же вставляются "острова" интерактивности — Client Components. Браузер получает готовый HTML и гидратирует только Client Components.
+
+**Важное ограничение — обратное невозможно:**
+
+```tsx
+// ❌ Нельзя импортировать Server Component внутри Client Component
+"use client";
+import { ServerComponent } from "./ServerComponent"; // ← ошибка
+
+// ✅ Можно передать Server Component как children (проп)
+"use client";
+export function Wrapper({ children }) {
+  return <div>{children}</div>; // children может быть Server Component
+}
+
+// И использовать так:
+<Wrapper>
+  <ServerComponent />  {/* ← OK, ServerComponent определён снаружи 'use client'*/}
+</Wrapper>
+```
+
+---
+
+### 2.5 Сравнительная таблица
+
+| | Server Component | Client Component |
+|---|---|---|
+| Директива | — (по умолчанию) | `'use client'` |
+| `async/await` | **Да** | Нет |
+| `useState`, `useEffect` | Нет | **Да** |
+| Хуки Next.js (`useRouter`, `usePathname`) | Нет | **Да** |
+| Браузерные API | Нет | **Да** |
+| Прямой доступ к БД | **Да** | Нет |
+| `'server-only'` импорты | **Да** | Нет |
+| Секретные `process.env` | **Да** | Нет (утекут в бандл) |
+| Включение в HTML при SSR | Да | Да |
+| Гидратация на клиенте | Нет | **Да** |
+
+---
+
+---
+
+## 3. Data Fetching и Кэширование
+
+Next.js расширяет нативный `fetch` Web API — добавляет серверное кэширование и ревалидацию. Весь fetch внутри Server Components работает через этот расширенный API.
+
+---
+
+### 3.1 Базовый fetch в Server Component
+
+```tsx
+// app/cache/page.tsx
+async function getGithubProfile() {
+  const res = await fetch("https://api.github.com/users/vercel", {
+    cache: "force-cache", // стратегия кэширования
+  });
+
+  if (!res.ok) {
+    throw new Error("Failed to fetch data");
+  }
+
+  return res.json();
+}
+
+export default async function CachePage() {
+  const profile = await getGithubProfile(); // ← await прямо в Server Component
+
+  return (
+    <main>
+      <h2>Profile: {profile.name}</h2>
+      <p>Public repos: {profile.public_repos}</p>
+    </main>
+  );
+}
+```
+
+`fetch` в Server Component — синхронная модель: данные пришли → отрендерили HTML → отдали клиенту. Никаких `useEffect`, `useState`, `loading` стейтов — всё на сервере.
+
+---
+
+### 3.2 Опция `cache` — стратегия кэширования запроса
+
+Самый важный параметр, определяет где и как долго хранится ответ.
+
+---
+
+#### `cache: "force-cache"` — статический кэш (SSG-поведение)
+
+```tsx
+const res = await fetch(url, { cache: "force-cache" });
+```
+
+Ответ кэшируется **навсегда** (до следующего деплоя или ручной инвалидации). При повторном запросе на тот же URL Next.js отдаёт из кэша, не делая сетевого запроса.
+
+**Когда использовать:** данные которые почти не меняются — справочники, публичные профили, документация.
+
+**Аналог:** SSG (`getStaticProps`) в Pages Router.
+
+> В Next.js 14 и раньше `"force-cache"` был дефолтным значением. С Next.js 15 дефолт изменился на `"no-store"`.
+
+---
+
+#### `cache: "no-store"` — без кэша (SSR-поведение)
+
+```tsx
+const res = await fetch(url, { cache: "no-store" });
+```
+
+Никакого кэша: каждый запрос к странице делает новый сетевой запрос. Данные всегда свежие.
+
+**Когда использовать:** персонализированные данные, корзина покупок, приватные данные пользователя, биржевые котировки.
+
+**Аналог:** SSR (`getServerSideProps`) в Pages Router.
+
+```tsx
+// Пример: страница с актуальным курсом акций
+async function getStockPrice(ticker: string) {
+  const res = await fetch(`https://api.example.com/stocks/${ticker}`, {
+    cache: "no-store", // ← каждый раз свежие данные
+  });
+  return res.json();
+}
+```
+
+---
+
+#### `next: { revalidate: N }` — ISR (Incremental Static Regeneration)
+
+```tsx
+const res = await fetch(url, {
+  next: { revalidate: 60 }, // ← кэш живёт 60 секунд
+});
+```
+
+Гибрид между SSG и SSR: страница рендерится и кэшируется как статическая, но через N секунд кэш считается "устаревшим". При следующем запросе:
+1. Клиент **мгновенно** получает устаревшую (stale) версию из кэша
+2. Параллельно Next.js делает новый fetch в фоне и обновляет кэш
+3. Следующий запрос уже получит обновлённую версию
+
+Это паттерн **stale-while-revalidate**: пользователь никогда не ждёт, данные обновляются в фоне.
+
+```
+Первый запрос:   fetch → кэш записан (t=0)
+Запрос в t=30:   из кэша (свежий)
+Запрос в t=61:   из кэша (устаревший, но отдаётся) + фоновый fetch
+Запрос в t=62:   из обновлённого кэша
+```
+
+**Когда использовать:** контент который меняется редко — каталог товаров, новости, статьи блога, цены.
+
+**Аналог:** ISR (`revalidate` в `getStaticProps`) в Pages Router.
+
+---
+
+#### `next: { tags: string[] }` — тегирование для ручной инвалидации
+
+```tsx
+const res = await fetch(url, {
+  next: {
+    revalidate: 3600,          // ISR каждый час
+    tags: ["github-profile"],  // тег для ручной инвалидации
+  },
+});
+```
+
+Теги позволяют точечно инвалидировать кэш из Server Action или Route Handler:
+
+```ts
+// app/actions.ts
+import { revalidateTag } from "next/cache";
+
+export async function refreshProfile() {
+  revalidateTag("github-profile"); // ← инвалидирует все fetch с этим тегом
+}
+```
+
+**Когда использовать:** CMS-данные, когда нужно обновить кэш после редактирования контента в админке.
+
+---
+
+#### `cache: "default"` — стандартное HTTP-кэширование
+
+```tsx
+const res = await fetch(url, { cache: "default" });
+```
+
+Следует HTTP-заголовкам ответа сервера (`Cache-Control`, `Expires`). Если сервер говорит `Cache-Control: max-age=300` — кэшируется на 5 минут. Если `Cache-Control: no-cache` — перепроверяет при каждом запросе.
+
+**Когда использовать:** внешние API которые сами управляют кэшированием через заголовки.
+
+---
+
+#### `cache: "only-if-cached"` — только из кэша
+
+```tsx
+const res = await fetch(url, { cache: "only-if-cached" });
+```
+
+Никогда не делает сетевого запроса. Если данных в кэше нет — возвращает ошибку. Экзотический вариант, используется редко.
+
+---
+
+### 3.3 Сравнительная таблица стратегий
+
+| Стратегия | Поведение | Свежесть данных | Производительность |
+|---|---|---|---|
+| `force-cache` | Кэш навсегда (до деплоя) | Данные на момент деплоя | Максимальная |
+| `next: { revalidate: N }` | Кэш N секунд, фоновое обновление | Отставание до N сек | Высокая |
+| `no-store` | Без кэша, fetch на каждый запрос | Всегда актуальные | Низкая |
+| `default` | По HTTP-заголовкам от сервера | Зависит от API | Зависит от API |
+
+---
+
+### 3.4 Четыре слоя кэширования Next.js
+
+Next.js кэширует данные на нескольких уровнях одновременно. Важно понимать что именно инвалидируется при каждом действии.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  1. Request Memoization (в памяти, один рендер)      │
+│     Дедупликация одинаковых fetch() внутри одного    │
+│     серверного рендера. Не персистентный.            │
+├─────────────────────────────────────────────────────┤
+│  2. Data Cache (сервер, персистентный)               │
+│     Кэш ответов fetch(). Живёт между запросами и     │
+│     деплоями. Управляется опцией cache в fetch().    │
+├─────────────────────────────────────────────────────┤
+│  3. Full Route Cache (сервер, персистентный)         │
+│     Закэшированный HTML + RSC payload для            │
+│     статических страниц. Строится при next build.   │
+├─────────────────────────────────────────────────────┤
+│  4. Router Cache (клиент, в памяти браузера)         │
+│     RSC payload страниц которые пользователь уже    │
+│     посещал. Живёт до закрытия вкладки.              │
+└─────────────────────────────────────────────────────┘
+```
+
+#### 1. Request Memoization
+
+Если один и тот же URL fetched несколько раз за один рендер (например в layout и page), Next.js делает **один** сетевой запрос и переиспользует результат.
+
+```tsx
+// layout.tsx — запрашивает пользователя
+const user = await fetch("https://api/me"); // ← первый вызов, идёт в сеть
+
+// page.tsx — тоже запрашивает пользователя
+const user = await fetch("https://api/me"); // ← возвращает из памяти, без сети
+```
+
+Это позволяет делать fetch прямо в компонентах где нужны данные, не проп-дриллингом через layout → page.
+
+---
+
+#### 2. Data Cache
+
+Персистентный кэш на сервере. Управляется опцией `cache` в `fetch()`. Переживает перезапуски сервера. Инвалидируется через:
+- `revalidatePath('/path')` — все данные для пути
+- `revalidateTag('tag')` — данные с конкретным тегом
+- `next: { revalidate: N }` — по времени
+
+---
+
+#### 3. Full Route Cache
+
+При `next build` Next.js рендерит все **статические** страницы и кэширует HTML + RSC payload. При запросе к такой странице сервер отдаёт из кэша мгновенно.
+
+Страница считается **динамической** (не кэшируется в Full Route Cache) если:
+- Использует `cache: "no-store"` в любом fetch
+- Читает `cookies()`, `headers()`, `searchParams`
+- Вызывает `noStore()` из `next/cache`
+
+---
+
+#### 4. Router Cache
+
+Браузерный кэш RSC payload. Когда пользователь переходит на `/dashboard`, Next.js сохраняет результат в памяти. При возврате назад — мгновенная отрисовка из Router Cache без запроса к серверу.
+
+Инвалидируется:
+- `router.refresh()` — сбрасывает Router Cache для текущего роута
+- После Server Action — Next.js автоматически инвалидирует связанные пути
+- По истечению TTL: 30 секунд для динамических страниц, 5 минут для статических
+
+---
+
+### 3.5 `revalidatePath` и `revalidateTag` — ручная инвалидация
+
+Вызываются из **Server Actions** или **Route Handlers** (не из компонентов).
+
+```ts
+import { revalidatePath, revalidateTag } from "next/cache";
+
+// Инвалидировать конкретный путь
+revalidatePath("/dashboard/users"); // ← Full Route Cache + Data Cache для этого пути
+
+// Инвалидировать по тегу (точечно, без пересчёта всех страниц)
+revalidateTag("users-list"); // ← все fetch() с тегом "users-list"
+```
+
+**Типичный сценарий:** форма добавления нового пользователя → Server Action → `revalidatePath("/users")` → страница пересобирается с новыми данными:
+
+```ts
+// app/actions.ts
+"use server";
+import { revalidatePath } from "next/cache";
+
+export async function addUser(formData: FormData) {
+  await db.users.create({ name: formData.get("name") });
+  revalidatePath("/dashboard/users"); // ← страница пересчитается при следующем запросе
+}
+```
+
+---
+
+### 3.6 Как выбрать стратегию — схема решений
+
+```
+Данные меняются при каждом запросе?
+  Да → cache: "no-store"  (SSR)
+
+Данные меняются редко (раз в час, день)?
+  Да → next: { revalidate: N }  (ISR)
+       Нужен ручной контроль? → добавить next: { tags: [...] }
+
+Данные не меняются до следующего деплоя?
+  Да → cache: "force-cache"  (SSG)
+
+Нужно обновить кэш сразу после мутации?
+  → revalidatePath() или revalidateTag() в Server Action
+```
+
+---
+
+### 3.7 `noStore()` — отключение кэша без изменения fetch
+
+Альтернатива `cache: "no-store"` — функция `noStore()` из `next/cache`. Полезна когда нельзя изменить вызов fetch (например это сторонняя библиотека).
+
+```ts
+import { unstable_noStore as noStore } from "next/cache";
+
+export async function getProfile() {
+  noStore(); // ← вся функция теперь без кэша
+  const res = await fetch(url); // сам fetch без опции cache
+  return res.json();
+}
+```
+
+---
+
+### 3.8 `"use cache"` — директива кэширования функций (Next.js 16)
+
+`"use cache"` — новый API кэширования в Next.js 16 (Dynamic IO). В отличие от опции `cache` в `fetch()`, она кэширует **результат произвольной async-функции**, а не только HTTP-ответ.
+
+Директива пишется первой строкой внутри тела функции:
+
+```tsx
+// app/products/page.tsx
+import { cacheLife, cacheTag } from "next/cache";
+
+async function fetchProducts() {
+  "use cache"; // ← кэшировать результат этой функции
+
+  cacheLife({ stale: 60, revalidate: 120, expire: 3600 });
+  cacheTag("all-products");
+
+  const res = await fetch("https://dummyjson.com/products?limit=5");
+  const data = await res.json();
+  return data.products;
+}
+```
+
+---
+
+#### `cacheLife()` — время жизни кэша
+
+Задаёт три параметра кэш-записи:
+
+| Параметр | Смысл |
+|---|---|
+| `stale` | Сколько секунд клиент считает данные свежими (client cache) |
+| `revalidate` | Через сколько секунд сервер перепроверяет в фоне |
+| `expire` | Через сколько секунд запись полностью удаляется из кэша |
+
+```ts
+// Кастомные значения
+cacheLife({ stale: 60, revalidate: 120, expire: 3600 });
+
+// Встроенные профили
+cacheLife("seconds")  // stale: 0,    revalidate: 1,      expire: 60
+cacheLife("minutes")  // stale: 60,   revalidate: 60,     expire: 3600
+cacheLife("hours")    // stale: 3600, revalidate: 3600,   expire: 86400
+cacheLife("days")     // stale: 86400, revalidate: 86400, expire: 604800
+cacheLife("weeks")    // stale: 604800, ...
+cacheLife("max")      // максимальные значения
+```
+
+В нашем проекте `products/[id]/page.tsx` использует профиль `"hours"`:
+
+```tsx
+async function fetchProduct(id: string) {
+  "use cache";
+  cacheLife("hours");  // кэш страницы товара на сутки, ревалидация каждый час
+
+  const res = await fetch(`https://dummyjson.com/products/${id}`);
+  if (!res.ok) {
+    notFound(); // ← notFound() работает внутри "use cache" функций
+  }
+  return res.json();
+}
+```
+
+---
+
+#### `cacheTag()` — теги для инвалидации
+
+`cacheTag` помечает кэш-запись тегами. Теги позволяют точечно сбрасывать кэш через `revalidateTag()`:
+
+```tsx
+// Несколько тегов — групповой и индивидуальный
+cacheTag("all-products");          // инвалидирует весь каталог
+cacheTag(`product-${id}`);         // инвалидирует конкретный товар
+```
+
+```ts
+// Сброс кэша из Server Action или Route Handler
+import { revalidateTag } from "next/cache";
+
+revalidateTag("all-products");     // сбрасывает все функции с этим тегом
+revalidateTag(`product-42`);       // сбрасывает только товар с id=42
+```
+
+---
+
+#### Гранулярность тегов через `next: { tags }` на fetch
+
+Когда данные организованы иерархически (каталог + отдельные записи), используют два типа тегов:
+
+```tsx
+// app/_components/hot-release.tsx
+const res = await fetch(`https://dummyjson.com/products/${id}`, {
+  next: {
+    tags: ["sneakers-data", `sneaker-${id}`],
+    //     ↑ групповой тег    ↑ тег конкретного товара
+  },
+});
+```
+
+Это позволяет:
+- `revalidateTag("sneakers-data")` — сбросить весь каталог кроссовок
+- `revalidateTag("sneaker-5")` — сбросить только один товар
+
+---
+
+#### `"use cache"` vs `fetch` cache options — когда что применять
+
+| | `fetch({ cache: ... })` | `"use cache"` |
+|---|---|---|
+| Что кэшируется | HTTP-ответ | Результат функции (любые данные) |
+| Применимость | Только `fetch()` | Любая async-функция, включая запросы к БД |
+| Управление временем | `next: { revalidate }` | `cacheLife()` |
+| Теги | `next: { tags }` | `cacheTag()` |
+| Доступно с | Next.js 13+ | Next.js 15+ (стабильно в 16) |
+
+---
+
+### 3.9 Паттерн тегирования: группа + отдельная запись
+
+В нашем проекте `sneakers-catalog.tsx` и `hot-release.tsx` демонстрируют разные уровни инвалидации:
+
+```
+revalidateTag("sneakers-data")
+  ↓ сбрасывает кэш:
+  ├── SneakerCatalog (весь список)
+  └── HotRelease (конкретный товар, т.к. у него тоже тег "sneakers-data")
+
+revalidateTag("sneaker-5")
+  ↓ сбрасывает кэш:
+  └── HotRelease({ id: "5" }) — только этот компонент
+```
+
+Это позволяет при обновлении одного товара в CMS инвалидировать только его страницу, не пересобирая весь каталог.
+
+---
+
+*Следующие темы для изучения: Server Actions, Middleware, Optimizations (Image, Font)*
